@@ -36,6 +36,11 @@
         </dependency>
 
         <dependency>
+            <groupId>org.locationtech.jts</groupId>
+            <artifactId>jts-core</artifactId>
+        </dependency>
+
+        <dependency>
             <groupId>commons-collections</groupId>
             <artifactId>commons-collections</artifactId>
         </dependency>
@@ -96,6 +101,12 @@
             <groupId>org.geotools</groupId>
             <artifactId>gt-epsg-hsql</artifactId>
             <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.openlr</groupId>
+            <artifactId>xml</artifactId>
+            <version>1.4.4-SNAPSHOT</version>
+            <scope>compile</scope>
         </dependency>
 
     </dependencies>

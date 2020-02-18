@@ -32,39 +32,21 @@ package openlr.decoder.rating;
 
 import openlr.LocationReferencePoint;
 import openlr.OpenLRProcessingException;
+import openlr.decoder.OpenLRDecoderProcessingException;
 import openlr.decoder.properties.OpenLRDecoderProperties;
-import openlr.map.FormOfWay;
-import openlr.map.FunctionalRoadClass;
-import openlr.map.Line;
-import openlr.map.Node;
+import openlr.map.*;
 import openlr.map.utils.GeometryUtils;
-import openlr.map.utils.GeometryUtils.BearingDirection;
-import org.apache.log4j.Logger;
+import org.locationtech.jts.geom.Coordinate;
 
-import java.util.Spliterator;
-import java.util.Spliterators;
-import java.util.stream.Stream;
-import java.util.stream.StreamSupport;
+import java.util.Arrays;
+
+import static openlr.decoder.OpenLRDecoderProcessingException.DecoderProcessingError.INVALID_MAP_DATA;
 
 /**
- * The Class OpenLRRatingImpl implements the rating function for OpenLR.
+ * The Class OpenLRRatingImpl implements the Frechet Distance function for OpenLR.
  * <p>
- * This implementation makes use of the following attributes:
- * <ul>
- * <li>distance between the LRP position and the corresponding node of the line
- * <li>differences in the functional road class
- * <li>differences in the form of way
- * <li>differences in the bearing
- * </ul>
- * The formula used for the rating value looks like:<br>
- * <br>
- * [node_factor] * node_value + [line_factor] * (bearing_value + frc_value +
- * fow_value) <br>
- * <br>
- * The factors are defined in the OpenLR properties. The values are based on a
- * classification how good the actual line value matches the LRP attributes. The
- * possible categories are defined in {@link OpenLRRating.RatingCategory} and
- * the rating values are also defined in the OpenLR properties. <br>
+ * It is an experiment implementation to test how good the actual line value matches
+ * the LRP attributes by Frechet Distance between them
  * <p>
  * OpenLR is a trade mark of TomTom International B.V.
  * <p>
@@ -74,231 +56,94 @@ import java.util.stream.StreamSupport;
  */
 public class OpenLRRatingImpl implements OpenLRRating {
 
-    /** Number of degrees for a half circle */
-    private static final int HALF_CIRCLE = 180;
-
-    /** Number of degrees for a full circle */
-    private static final int FULL_CIRCLE = 360;
-
-    /** logger */
-    private static final Logger LOG = Logger.getLogger(OpenLRRatingImpl.class);
-
-    /** The Constant fowRatingTable. */
-    private static final FormOfWayRatingTable FOW_RATING_TABLE = new FormOfWayRatingTable();
-
-    /** {@inheritDoc} */
+    /** {@inheritDoc}
+     * @return*/
     @Override
     public final int getRating(final OpenLRDecoderProperties properties,
                                final int distance, final LocationReferencePoint p,
-                               final Line line, final int projectionAlongLine)
-            throws OpenLRProcessingException {
-        BearingDirection dir = null;
-        if (p.isLastLRP()) {
-            dir = BearingDirection.AGAINST_DIRECTION;
+                               final Line line, final int projectionAlongLine) throws OpenLRProcessingException {
+        try {
+
+            // Location reference point geometry
+            GeoCoordinates lrpEndPoint = GeometryUtils.determineCoordinateInDistance(
+                    p.getLongitudeDeg(),
+                    p.getLatitudeDeg(),
+                    (int) p.getBearing(),
+                    (double) properties.getBearingDistance() / 1000);
+
+            int offset = p.isLastLRP() ? -properties.getBearingDistance() : properties.getBearingDistance();
+
+            // Points of the line to test geometry
+            int endPointDistanceAlongLine = projectionAlongLine + offset;
+            GeoCoordinates startPoint = line.getGeoCoordinateAlongLine(projectionAlongLine);
+            GeoCoordinates endPoint = line.getGeoCoordinateAlongLine(endPointDistanceAlongLine);
+
+            // Construct to coordinate array
+            Coordinate lrpStartPointCoor = new Coordinate(p.getLongitudeDeg(), p.getLatitudeDeg());
+            Coordinate lrpEndPointCoor = new Coordinate(lrpEndPoint.getLongitudeDeg(), lrpEndPoint.getLatitudeDeg());
+
+            Coordinate startPointCoor = new Coordinate(startPoint.getLongitudeDeg(), startPoint.getLatitudeDeg());
+            Coordinate endPointCoor = new Coordinate(endPoint.getLongitudeDeg(), endPoint.getLatitudeDeg());
+
+            Coordinate[] lrpCoordinates = new Coordinate[]{lrpStartPointCoor, lrpEndPointCoor};
+            Coordinate[] testLineCoordinates = new Coordinate[]{startPointCoor, endPointCoor};
+
+            int lrpLength = lrpCoordinates.length;
+            int testLength = testLineCoordinates.length;
+
+            double[][] mem = new double[lrpLength][testLength];
+
+            for (double[] row : mem)
+                Arrays.fill(row, -1.0);
+
+            double frechetDistance = computeDiscreteFrechetDistance(lrpCoordinates, testLineCoordinates, mem, lrpLength - 1, testLength - 1);
+
+            double inverseFrechetDistance = (1 / frechetDistance);
+
+            return (int) inverseFrechetDistance;
+        }
+        catch (InvalidMapDataException e) {
+            throw new OpenLRDecoderProcessingException(INVALID_MAP_DATA, e);
+        }
+    }
+
+    /**
+     *
+     * @param lrpCoordinates start and end coordinates of the Location reference point
+     * @param testLineCoordinates start and end coordinates of the line to test
+     * @param mem
+     * @param i
+     * @param j
+     * @return Computed Discrete Frechet Distance in Double
+     */
+
+    private double computeDiscreteFrechetDistance(Coordinate[] lrpCoordinates, Coordinate[] testLineCoordinates, double[][] mem, int i, int j) {
+        if (mem[i][j] > -1) {
+            return mem[i][j];
+        } else if (i == 0 && j == 0) {
+            mem[i][j] = lrpCoordinates[i].distance(testLineCoordinates[j]);
+        } else if (i > 0 && j == 0) {
+            mem[i][j] = getMax(computeDiscreteFrechetDistance(lrpCoordinates, testLineCoordinates, mem, i - 1, j), lrpCoordinates[i].distance(testLineCoordinates[j]));
+        } else if (i == 0 && j > 0) {
+            mem[i][j] = getMax(computeDiscreteFrechetDistance(lrpCoordinates, testLineCoordinates, mem, i, j - 1), lrpCoordinates[i].distance(testLineCoordinates[j]));
+        } else if (i > 0 && j > 0) {
+            mem[i][j] = getMax(getMin(computeDiscreteFrechetDistance(lrpCoordinates, testLineCoordinates, mem, i - 1, j), computeDiscreteFrechetDistance(lrpCoordinates, testLineCoordinates, mem, i - 1, j - 1), computeDiscreteFrechetDistance(lrpCoordinates, testLineCoordinates, mem, i, j - 1)), lrpCoordinates[i].distance(testLineCoordinates[j]));
         } else {
-            dir = BearingDirection.IN_DIRECTION;
+            mem[i][j] = -2.0;
         }
 
-        int nodeRating = calculateDistanceRating(properties, distance);
-
-        if (shouldApplyNonJunctionNodeFactor(line, dir, projectionAlongLine)) {
-            nodeRating = (int) (properties.getNonJunctionNodeFactor() * nodeRating);
-        }
-
-        int bearingRating = calculateBearingRating(properties, p.getBearing(),
-                dir, line, projectionAlongLine);
-        if (bearingRating < 0) {
-            if (LOG.isDebugEnabled()) {
-                LOG.debug("bearing of a candidate line is out of range ["
-                        + line.getID() + "]");
-            }
-            return -1;
-        }
-        int frcRating = calculateFRCRating(properties, p.getFRC(), line);
-        int fowRating = calculateFOWRating(properties, p.getFOW(), line);
-        int lineRating = bearingRating + frcRating + fowRating;
-        int rating = properties.getNodeFactor() * nodeRating
-                + properties.getLineFactor() * lineRating;
-        if (LOG.isDebugEnabled()) {
-            LOG.debug("total rating [" + line.getID() + "]: " + rating
-                    + "  (node: " + nodeRating + ", line: " + lineRating
-                    + ", bearing: " + bearingRating + ", frc: " + frcRating
-                    + ", fow: " + fowRating + ")");
-        }
-        return rating;
+        return mem[i][j];
     }
 
-    /**
-     * Determine whether to apply the non-junction node factor to the node score
-     *
-     * @param line the line under consideration
-     * @param dir the direction along the line
-     * @param projectionAlongLine the projected distance along the line
-     * @return true if the non-junction node factor is to be applied
-     */
-    private boolean shouldApplyNonJunctionNodeFactor(Line line, BearingDirection dir, int projectionAlongLine) {
-        // Only apply the non-junction node factor when the LRP matches a node and not a line directly
-        if (projectionAlongLine > 0 && projectionAlongLine < line.getLineLength()) {
-            return false;
-        }
-
-        // Find the node to check
-        Node node = dir == BearingDirection.IN_DIRECTION ? line.getStartNode() : line.getEndNode();
-
-        // Check if the node is not a junction
-        return !isJunction(node);
+    private double getMax(double... values) {
+        return Arrays.stream(values)
+                .max()
+                .getAsDouble();
     }
 
-    /**
-     * Check if a node is a junction. Junction nodes are nodes which are directly connected to more than 2 nodes.
-     *
-     * @param node the node to check
-     * @return true if the node is a junction
-     */
-    private boolean isJunction(Node node) {
-        return getConnectedNodeCount(node) > 2;
+    private double getMin(double... values) {
+        return Arrays.stream(values)
+                .min()
+                .getAsDouble();
     }
-
-    /**
-     * Get the number of nodes that are directly connected to a node via its connected lines
-     *
-     * @param node the node
-     * @return the number of connected nodes
-     */
-    private int getConnectedNodeCount(Node node) {
-        return (int) StreamSupport.stream(Spliterators.spliteratorUnknownSize(node.getConnectedLines(), Spliterator.ORDERED), false)
-                .flatMap(l -> Stream.of(l.getStartNode(), l.getEndNode()))
-                .filter(n -> !node.equals(n))
-                .distinct()
-                .count();
-    }
-
-    /**
-     * Calculates the node value based on the distance between the LRP position
-     * and the corresponding node. The formula looks like: <br>
-     * <br>
-     * node_value = [max_node_distance] - distance <br>
-     * <br>
-     * The max_node_distance is configurable in the OpenLR properties.
-     *
-     * @param properties
-     *            the OpenLR properties
-     * @param distance
-     *            the distance of the node to the LRP position
-     * @return the node value
-     * @throws OpenLRProcessingException
-     *             the open lr processing exception
-     */
-    private int calculateDistanceRating(
-            final OpenLRDecoderProperties properties, final double distance)
-            throws OpenLRProcessingException {
-        int diff = properties.getMaxNodeDistance() - (int) Math.round(distance);
-        return Math.max(0, diff);
-    }
-
-    /**
-     * Calculates the frc value based on the frc values of the line and the lrp
-     * attribute. <br>
-     * <br>
-     * The method calculates the difference of the frc IDs and looks up the
-     * rating category for this difference value. The defined value based on
-     * this category is used for the rating value. The rating categories and its
-     * rating values are defined in the OpenLR properties.
-     *
-     * @param properties
-     *            the OpenLR properties
-     * @param frc
-     *            the functional road class of the LRP
-     * @param line
-     *            the line to be rated
-     * @return the frc value
-     * @throws OpenLRProcessingException
-     *             the open lr processing exception
-     */
-    private int calculateFRCRating(final OpenLRDecoderProperties properties,
-                                   final FunctionalRoadClass frc, final Line line)
-            throws OpenLRProcessingException {
-        int lineFRC = line.getFRC().getID();
-        int diff = Math.abs(frc.getID() - lineFRC);
-
-        RatingCategory bestCat;
-        if (diff <= properties.getFrcIntervals(RatingCategory.EXCELLENT)) {
-            bestCat = RatingCategory.EXCELLENT;
-        } else if (diff <= properties.getFrcIntervals(RatingCategory.GOOD)) {
-            bestCat = RatingCategory.GOOD;
-        } else if (diff <= properties.getFrcIntervals(RatingCategory.AVERAGE)) {
-            bestCat = RatingCategory.AVERAGE;
-        } else {
-            bestCat = RatingCategory.POOR;
-        }
-        return properties.getFrcRating(bestCat);
-    }
-
-    /**
-     * Calculates the fow value based on the line and lrp attributes. The
-     * formula uses the rating values defined in the OpenLR properties. The
-     * matching between the line and lrp fow attribute is EXCELLENT if both IDs
-     * are equal. Otherwise if one of the attributes is undefined then the match
-     * is AVERAGE and if no former rule matches then we have a POOR match of the
-     * attributes.
-     *
-     * @param properties
-     *            the OpenLR properties
-     * @param fow
-     *            the fow attribute of the LRP
-     * @param line
-     *            the line to be rated
-     * @return the fow value
-     * @throws OpenLRProcessingException
-     *             the open lr processing exception
-     */
-    private int calculateFOWRating(final OpenLRDecoderProperties properties,
-                                   final FormOfWay fow, final Line line)
-            throws OpenLRProcessingException {
-        RatingCategory category = FOW_RATING_TABLE.getRating(fow, line.getFOW());
-        return properties.getFowRating(category);
-    }
-
-    /**
-     * Calculates the bearing value based on the bearing values of the line and
-     * the lrp attribute. <br>
-     * <br>
-     * The method calculates the difference of the bearing values and looks up
-     * the rating category for this difference value. The defined value based on
-     * this category is used for the rating value. The rating categories and its
-     * rating values are defined in the OpenLR properties.
-     *
-     * Candidate lines with a bearing difference greater than the defined value
-     * will be rejected.
-     *
-     * @param properties
-     *            the OpenLR properties
-     * @param bearing
-     *            the bearing value of the LRP
-     * @param dir
-     *            the bearing direction (in direction or against direction)
-     * @param line
-     *            the line to be rated
-     * @param projectionAlongLine
-     *            the distance between the projection point and the start of the
-     *            line
-     * @return the bearing value
-     * @throws OpenLRProcessingException
-     *             the open lr processing exception
-     */
-    private int calculateBearingRating(
-            final OpenLRDecoderProperties properties, final double bearing,
-            final BearingDirection dir, final Line line,
-            final int projectionAlongLine) throws OpenLRProcessingException {
-        double lineBearing = GeometryUtils.calculateLineBearing(line, dir,
-                properties.getBearingDistance(), projectionAlongLine);
-
-        double difference = GeometryUtils.bearingDifference(lineBearing, bearing);
-
-        if (difference > properties.getMaxBearingDiff()) {
-            return 0;
-        }
-        return (int) ((1.0 - difference / properties.getMaxBearingDiff()) * properties.getMaxBearingScore());
-    }
-
 }
